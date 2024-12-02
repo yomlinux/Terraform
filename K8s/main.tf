@@ -70,7 +70,7 @@ resource "null_resource" "setup_repo" {
   }
 }
 
-# Install Kubernetes packages
+# Install Kubernetes packages and kubectl
 resource "null_resource" "install_k8s_packages" {
   for_each = var.nodes
 
@@ -84,31 +84,40 @@ resource "null_resource" "install_k8s_packages" {
   provisioner "remote-exec" {
     inline = [
       "echo Installing Kubernetes packages on ${each.value["role"]}",
+      "curl -LO \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\"",
+      "curl -LO https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl",
+      "sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl",
       "sudo yum install -y kubeadm kubelet kubectl --disableexcludes=kubernetes",
       "sudo systemctl enable kubelet && sudo systemctl start kubelet",
+      "echo Installing kubectl",
     ]
-    on_failure = continue
+    on_failure = "continue"
   }
 }
 
-# Initialize Kubernetes master
+# Initialize Kubernetes master on both nodes
 resource "null_resource" "initialize_master" {
+  for_each = { 
+    "kmaster1" = var.nodes["kmaster1"], 
+    "kmaster2" = var.nodes["kmaster2"]
+  }
+
   connection {
     type        = "ssh"
-    host        = var.nodes.kmaster1["ip"]
+    host        = each.value["ip"]
     user        = "root"
     private_key = file("~/.ssh/id_rsa")
   }
 
   provisioner "remote-exec" {
     inline = [
-      "echo Initializing Kubernetes master on ${var.nodes.kmaster1["ip"]}",
-      "sudo kubeadm init --apiserver-advertise-address=${var.nodes.kmaster1["ip"]} --pod-network-cidr=192.168.0.0/16",
+      "echo Initializing Kubernetes master on ${each.key}",
+      "sudo kubeadm init --apiserver-advertise-address=${each.value["ip"]} --pod-network-cidr=192.168.0.0/16",
       "mkdir -p $HOME/.kube",
       "sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config",
       "sudo chown $(id -u):$(id -g) $HOME/.kube/config",
     ]
-    on_failure = continue
+    on_failure = "continue"
   }
 }
 
@@ -130,6 +139,6 @@ resource "null_resource" "join_cluster" {
       "echo Joining worker ${each.value["ip"]} to the cluster",
       "sudo kubeadm join ${var.nodes.kmaster1["ip"]}:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>",
     ]
-    on_failure = continue
+    on_failure = "continue"
   }
 }
