@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: java-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: java-app
+  template:
+    metadata:
+      labels:
+        app: java-app
+    spec:
+      containers:
+      - name: java-app
+        image: openjdk:11
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: java-app-storage
+          mountPath: /usr/local/tomcat/webapps
+      volumes:
+      - name: java-app-storage
+        persistentVolumeClaim:
+          claimName: java-app-pvc
