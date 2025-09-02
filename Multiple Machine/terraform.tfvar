@@ -1,0 +1,21 @@
+# ------------------ vSphere Credentials ------------------
+vsphere_user     = "administrator@dnixx.comm"
+vsphere_password = "P@"
+vsphere_server   = "10.0.0.120"
+
+# ------------------ Datacenter & Host ------------------
+dc_name        = "DNIXX"
+esxi_host_name = "10.0.0.121"      # Standalone ESXi host
+datastore_name = "proddata1"
+network_name   = "VM Network"
+
+# ------------------ VM Template ------------------
+template_path = "/DNIXX/vm/test"   # Path to your Rocky Linux 8 template
+vm_domain     = "dnixx.comm"
+
+# ------------------ Kubernetes Node IPs ------------------
+static_ips = {
+  "k8s-master-1" = "10.0.0."
+  "k8s-worker-1" = "10.0.0."
+  "k8s-worker-2" = "10.0.0."
+}
