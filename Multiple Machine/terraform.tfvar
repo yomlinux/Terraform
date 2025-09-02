@@ -1,6 +1,7 @@
+
 # ------------------ vSphere Credentials ------------------
 vsphere_user     = "administrator@dnixx.comm"
-vsphere_password = "P@"
+vsphere_password = "P@ssw0rd123"
 vsphere_server   = "10.0.0.120"
 
 # ------------------ Datacenter & Host ------------------
@@ -15,7 +16,7 @@ vm_domain     = "dnixx.comm"
 
 # ------------------ Kubernetes Node IPs ------------------
 static_ips = {
-  "k8s-master-1" = "10.0.0."
-  "k8s-worker-1" = "10.0.0."
-  "k8s-worker-2" = "10.0.0."
+  "k8s-master-1" = "10.0.0.131"
+  "k8s-worker-1" = "10.0.0.132"
+  "k8s-worker-2" = "10.0.0.133"
 }
