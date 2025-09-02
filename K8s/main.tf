@@ -1,148 +1,122 @@
 terraform {
+  required_version = ">= 1.5.0"
   required_providers {
-    null = {
-      source = "hashicorp/null"
-      version = "~> 3.0"
+    vsphere = {
+      source  = "hashicorp/vsphere"
+      version = ">= 2.5.0"
     }
   }
-  required_version = ">= 1.3.0"
 }
 
-variable "repo_content" {
-  default = <<EOT
-[kubernetes]
-name=Kubernetes
-baseurl=https://pkgs.k8s.io/core:/stable:/v1.30/rpm/
-enabled=1
-gpgcheck=1
-gpgkey=https://pkgs.k8s.io/core:/stable:/v1.30/rpm/repodata/repomd.xml.key
-exclude=kubelet kubeadm kubectl
-EOT
+provider "vsphere" {
+  user                 = var.vsphere_user
+  password             = var.vsphere_password
+  vsphere_server       = var.vsphere_server
+  allow_unverified_ssl = true
 }
 
-variable "nodes" {
+# ------------------ Variables ------------------
+variable "vsphere_user"     { default = "administrator@dnixx.comm" }
+variable "vsphere_password" { sensitive = true }
+variable "vsphere_server"   { default = "10.0.0.120" }
+
+variable "dc_name"          { default = "DNIXX" }
+variable "esxi_host_name"   { default = "10.0.0.121" } # standalone ESXi host
+variable "datastore_name"   { default = "proddata1" }
+variable "network_name"     { default = "VM Network" }
+
+variable "template_path"    { default = "/DNIXX/vm/test" }
+variable "vm_domain"        { default = "dnixx.comm" }
+
+# Static IPs for VMs
+variable "static_ips" {
+  type = map(string)
   default = {
-    kmaster1 = { ip = "10.0.0.131", role = "master" }
-    kmaster2 = { ip = "10.0.0.132", role = "master" }
-    kworker1 = { ip = "10.0.0.133", role = "worker" }
-    kworker2 = { ip = "10.0.0.134", role = "worker" }
+    "k8s-master-1" = "10.0.0.131"
+    "k8s-worker-1" = "10.0.0.132"
+    "k8s-worker-2" = "10.0.0.133"
   }
 }
 
-# Clean up existing Kubernetes setup
-resource "null_resource" "clean_setup" {
-  for_each = var.nodes
-
-  connection {
-    type        = "ssh"
-    host        = each.value["ip"]
-    user        = "root"
-    private_key = file("~/.ssh/id_rsa")
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "echo Cleaning up existing Kubernetes setup",
-      "sudo kubeadm reset -f",
-      "sudo systemctl stop kubelet || true",
-      "sudo systemctl stop docker || true",
-      "sudo rm -rf /etc/cni /var/lib/etcd /root/.kube /etc/kubernetes /var/lib/kubelet",
-      "sudo yum remove -y kubeadm kubectl kubelet docker || true",
-    ]
+locals {
+  nodes = {
+    "k8s-master-1" = { role = "master", cpu = 2, memory_mb = 8192 }
+    "k8s-worker-1" = { role = "worker", cpu = 2, memory_mb = 4096 }
+    "k8s-worker-2" = { role = "worker", cpu = 2, memory_mb = 4096 }
   }
 }
 
-# Set up the Kubernetes repository
-resource "null_resource" "setup_repo" {
-  for_each = var.nodes
+# ------------------ Data Lookups ------------------
+data "vsphere_datacenter" "dc" {
+  name = var.dc_name
+}
 
-  connection {
-    type        = "ssh"
-    host        = each.value["ip"]
-    user        = "root"
-    private_key = file("~/.ssh/id_rsa")
+data "vsphere_host" "esxi" {
+  name          = var.esxi_host_name
+  datacenter_id = data.vsphere_datacenter.dc.id
+}
+
+data "vsphere_datastore" "ds" {
+  name          = var.datastore_name
+  datacenter_id = data.vsphere_datacenter.dc.id
+}
+
+data "vsphere_network" "net" {
+  name          = var.network_name
+  datacenter_id = data.vsphere_datacenter.dc.id
+}
+
+data "vsphere_virtual_machine" "template" {
+  datacenter_id = data.vsphere_datacenter.dc.id
+  name          = var.template_path
+}
+
+# ------------------ VM Resources ------------------
+resource "vsphere_virtual_machine" "k8s" {
+  for_each         = local.nodes
+
+  name             = each.key
+  resource_pool_id = data.vsphere_host.esxi.resource_pool_id
+  datastore_id     = data.vsphere_datastore.ds.id
+
+  num_cpus = each.value.cpu
+  memory   = each.value.memory_mb
+  guest_id = data.vsphere_virtual_machine.template.guest_id
+  scsi_type = data.vsphere_virtual_machine.template.scsi_type
+  firmware = "efi"  # Enables EFI to fix ACPI errors
+
+  network_interface {
+    network_id   = data.vsphere_network.net.id
+    adapter_type = data.vsphere_virtual_machine.template.network_interface_types[0]
   }
 
-  provisioner "remote-exec" {
-    inline = [
-      "echo '${var.repo_content}' | sudo tee /etc/yum.repos.d/k8s.repo",
-    ]
+  disk {
+    label            = "disk0"
+    size             = data.vsphere_virtual_machine.template.disks[0].size
+    thin_provisioned = data.vsphere_virtual_machine.template.disks[0].thin_provisioned
+  }
+
+  clone {
+    template_uuid = data.vsphere_virtual_machine.template.id
+
+    customize {
+      linux_options {
+        host_name = each.key
+        domain    = var.vm_domain
+      }
+
+      network_interface {
+        ipv4_address = var.static_ips[each.key]
+        ipv4_netmask = 24
+      }
+
+      ipv4_gateway = "10.0.0.1"
+    }
   }
 }
 
-# Install Kubernetes packages and kubectl
-resource "null_resource" "install_k8s_packages" {
-  for_each = var.nodes
-
-  connection {
-    type        = "ssh"
-    host        = each.value["ip"]
-    user        = "root"
-    private_key = file("~/.ssh/id_rsa")
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "echo Installing Kubernetes packages on ${each.value["role"]}",
-      "curl -LO \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\"",
-      #"curl -LO https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl",
-      #"sudo install -o root -g root -m 0755 kubectl /usr/bin/kubectl",
-      #"curl -LO https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubeadm",
-      #"sudo install -o root -g root -m 0755 kubectl /usr/bin/kubeadm",
-      #"curl -LO https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubelet",
-      #"sudo install -o root -g root -m 0755 kubectl /usr/bin/kubelet",
-      "sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes",
-      "sudo systemctl enable kubelet && sudo systemctl start kubelet",
-      "echo Installing kubectl",
-    ]
-    on_failure = "continue"
-  }
-}
-
-# Initialize Kubernetes master on both nodes
-resource "null_resource" "initialize_master" {
-  for_each = { 
-    "kmaster1" = var.nodes["kmaster1"], 
-    "kmaster2" = var.nodes["kmaster2"]
-  }
-
-  connection {
-    type        = "ssh"
-    host        = each.value["ip"]
-    user        = "root"
-    private_key = file("~/.ssh/id_rsa")
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "echo Initializing Kubernetes master on ${each.key}",
-      "sudo kubeadm init --apiserver-advertise-address=${each.value["ip"]} --pod-network-cidr=192.168.0.0/16",
-      "mkdir -p $HOME/.kube",
-      "sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config",
-      "sudo chown $(id -u):$(id -g) $HOME/.kube/config",
-    ]
-    on_failure = "continue"
-  }
-}
-
-# Join workers to the cluster
-resource "null_resource" "join_cluster" {
-  for_each = { for k, v in var.nodes : k => v if v.role != "master" }
-
-  depends_on = [null_resource.initialize_master]
-
-  connection {
-    type        = "ssh"
-    host        = each.value["ip"]
-    user        = "root"
-    private_key = file("~/.ssh/id_rsa")
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "echo Joining worker ${each.value["ip"]} to the cluster",
-      "sudo kubeadm join ${var.nodes.kmaster1["ip"]}:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>",
-    ]
-    on_failure = "continue"
-  }
+# ------------------ Outputs ------------------
+output "k8s_nodes" {
+  description = "VM names and roles"
+  value = { for k, v in local.nodes : k => v.role }
 }
