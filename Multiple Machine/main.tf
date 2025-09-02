@@ -32,17 +32,17 @@ variable "vm_domain"        { default = "dnixx.comm" }
 variable "static_ips" {
   type = map(string)
   default = {
-    "k8s-master-1" = "10.0.0.10"
-    "k8s-worker-1" = "10.0.0.11"
-    "k8s-worker-2" = "10.0.0.12"
+    "k8s-master-1" = "10.0.0.131"
+    "k8s-worker-1" = "10.0.0.132"
+    "k8s-worker-2" = "10.0.0.133"
   }
 }
 
 locals {
   nodes = {
-    "k8s-master-1" = { role = "master", cpu = 4, memory_mb = 8192 }
-    "k8s-worker-1" = { role = "worker", cpu = 4, memory_mb = 8192 }
-    "k8s-worker-2" = { role = "worker", cpu = 4, memory_mb = 8192 }
+    "k8s-master-1" = { role = "master", cpu = 2, memory_mb = 8192 }
+    "k8s-worker-1" = { role = "worker", cpu = 2, memory_mb = 4096 }
+    "k8s-worker-2" = { role = "worker", cpu = 2, memory_mb = 4096 }
   }
 }
 
