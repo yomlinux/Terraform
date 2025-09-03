@@ -60,10 +60,10 @@ module "eks" {
 
   cluster_endpoint_public_access = true
 
-  # Disable VPC-CNI since we'll use Cilium for networking
+  # CRITICAL: Disable AWS VPC CNI completely
   create_cni_ipv6_iam_policy = false
 
-  # Managed Node Groups - fixed configuration
+  # Managed Node Groups
   eks_managed_node_groups = {
     worker_nodes = {
       name           = "worker-nodes"
@@ -72,31 +72,43 @@ module "eks" {
       min_size       = 1
       instance_types = ["t3.medium"]
       subnet_ids     = module.vpc.private_subnets
-
-      # Additional recommended settings
       disk_size      = 20
       capacity_type  = "ON_DEMAND"
       
-      # IAM role settings - use proper policy attachment to avoid deprecation warnings
+      # Pre-userdata to prepare nodes for Cilium
+      pre_bootstrap_user_data = <<-EOT
+        #!/bin/bash
+        # Disable AWS CNI
+        echo "Disabling AWS CNI components..."
+        systemctl stop amazon-ecs-agent || true
+        systemctl disable amazon-ecs-agent || true
+        systemctl stop ecs || true
+        systemctl disable ecs || true
+        
+        # Clean up any existing CNI configs
+        rm -f /etc/cni/net.d/*aws*
+        rm -f /etc/cni/net.d/*-conflist
+        EOT
+
       iam_role_additional_policies = {
         AmazonEBSCSIDriverPolicy = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
       }
     }
   }
 
-  # EKS Addons configuration - remove vpc-cni since we'll use Cilium
+  # Only install essential addons, NO vpc-cni
   cluster_addons = {
     coredns = {
-      most_recent              = true
-      resolve_conflicts        = "OVERWRITE"
+      most_recent       = true
+      resolve_conflicts = "OVERWRITE"
     }
     kube-proxy = {
-      most_recent              = true
-      resolve_conflicts        = "OVERWRITE"
+      most_recent       = true
+      resolve_conflicts = "OVERWRITE"
     }
     aws-ebs-csi-driver = {
-      most_recent              = true
-      resolve_conflicts        = "OVERWRITE"
+      most_recent       = true
+      resolve_conflicts = "OVERWRITE"
     }
   }
 
@@ -106,7 +118,7 @@ module "eks" {
   }
 }
 
-# Configure Kubernetes provider with exec authentication
+# Configure Kubernetes provider
 provider "kubernetes" {
   host                   = module.eks.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
@@ -125,7 +137,6 @@ provider "kubernetes" {
   }
 }
 
-# Configure Helm provider with exec authentication
 provider "helm" {
   kubernetes {
     host                   = module.eks.cluster_endpoint
@@ -151,7 +162,7 @@ resource "helm_release" "cilium" {
   name             = "cilium"
   repository       = "https://helm.cilium.io/"
   chart            = "cilium"
-  version          = "1.14.5" # Use a specific version for stability
+  version          = "1.14.5"
   namespace        = "kube-system"
   create_namespace = true
   wait             = true
@@ -172,9 +183,10 @@ resource "helm_release" "cilium" {
     value = "true"
   }
 
+  # Start with partial mode first, then switch to strict
   set {
     name  = "kubeProxyReplacement"
-    value = "strict"
+    value = "partial"
   }
 
   set {
@@ -187,51 +199,57 @@ resource "helm_release" "cilium" {
     value = "dsr"
   }
 
+  # Disable Hubble initially to simplify setup
   set {
-    name  = "nodePort.enable"
-    value = "true"
-  }
-
-  set {
-    name  = "hostPort.enable"
-    value = "true"
-  }
-
-  set {
-    name  = "bgp.enabled"
+    name  = "hubble.enabled"
     value = "false"
   }
 
+  # Important: Set affinity to avoid scheduling conflicts
   set {
-    name  = "hubble.enabled"
-    value = "true"
+    name  = "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key"
+    value = "kubernetes.io/os"
   }
 
   set {
-    name  = "hubble.metrics.enabled"
-    value = "{dns,drop,tcp,flow,port-distribution,icmp,http}"
+    name  = "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator"
+    value = "In"
   }
 
   set {
-    name  = "hubble.relay.enabled"
-    value = "true"
+    name  = "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].values[0]"
+    value = "linux"
   }
 
-  set {
-    name  = "hubble.ui.enabled"
-    value = "true"
-  }
-
-  # Wait for cluster to be fully ready and nodes to be available
   depends_on = [
     module.eks,
-    time_sleep.wait_for_cluster
+    time_sleep.wait_for_cluster,
+    kubernetes_config_map_v1_data.cleanup_aws_cni
   ]
 }
 
-# Add a delay to ensure cluster is fully ready before installing Cilium
+# Clean up any existing AWS CNI resources
+resource "kubernetes_config_map_v1_data" "cleanup_aws_cni" {
+  metadata {
+    name      = "aws-auth"
+    namespace = "kube-system"
+  }
+
+  data = {
+    mapRoles = yamlencode([{
+      rolearn  = module.eks.eks_managed_node_groups["worker_nodes"].iam_role_arn
+      username = "system:node:{{EC2PrivateDNSName}}"
+      groups   = ["system:bootstrappers", "system:nodes"]
+    }])
+  }
+
+  force = true
+
+  depends_on = [module.eks]
+}
+
 resource "time_sleep" "wait_for_cluster" {
-  create_duration = "120s"
+  create_duration = "180s"
   depends_on = [module.eks]
 }
 
@@ -286,6 +304,31 @@ output "cluster_arn" {
 output "cluster_status" {
   description = "The status of the EKS cluster"
   value       = module.eks.cluster_status
+}
+
+output "cluster_name" {
+  value = module.eks.cluster_name
+}
+
+output "test_commands" {
+  value = <<EOT
+After cluster creation, run:
+
+# Update kubeconfig
+aws eks update-kubeconfig --region us-east-1 --name ${module.eks.cluster_name}
+
+# Check Cilium status
+kubectl get pods -n kube-system -l k8s-app=cilium
+
+# If Cilium is still failing, check logs:
+kubectl logs -n kube-system -l k8s-app=cilium --previous
+
+# Check nodes
+kubectl get nodes
+
+# Check system pods
+kubectl get pods -n kube-system
+EOT
 }
 
 output "cilium_status" {
