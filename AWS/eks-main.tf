@@ -34,12 +34,12 @@ module "vpc" {
 
   # Required tags for EKS to properly discover subnets
   public_subnet_tags = {
-    "kubernetes.io/role/elb"                      = 1
+    "kubernetes.io/role/elb"               = 1
     "kubernetes.io/cluster/my-eks-cluster" = "shared"
   }
 
   private_subnet_tags = {
-    "kubernetes.io/role/internal-elb"             = 1
+    "kubernetes.io/role/internal-elb"      = 1
     "kubernetes.io/cluster/my-eks-cluster" = "shared"
   }
 }
@@ -50,7 +50,7 @@ module "eks" {
   version = "19.21.0"
 
   cluster_name    = "my-eks-cluster"
-  cluster_version = "1.28"  # Changed to a supported version in us-east-1
+  cluster_version = "1.28"
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
@@ -78,19 +78,27 @@ module "eks" {
     }
   }
 
-  # EKS Addons configuration to avoid the warning
+  # EKS Addons configuration - fixed to avoid deprecated arguments
   cluster_addons = {
     coredns = {
-      most_recent = true
+      most_recent              = true
+      resolve_conflicts_on_create = "OVERWRITE"
+      resolve_conflicts_on_update = "OVERWRITE"
     }
     kube-proxy = {
-      most_recent = true
+      most_recent              = true
+      resolve_conflicts_on_create = "OVERWRITE"
+      resolve_conflicts_on_update = "OVERWRITE"
     }
     vpc-cni = {
-      most_recent = true
+      most_recent              = true
+      resolve_conflicts_on_create = "OVERWRITE"
+      resolve_conflicts_on_update = "OVERWRITE"
     }
     aws-ebs-csi-driver = {
-      most_recent = true
+      most_recent              = true
+      resolve_conflicts_on_create = "OVERWRITE"
+      resolve_conflicts_on_update = "OVERWRITE"
     }
   }
 
@@ -101,12 +109,13 @@ module "eks" {
 }
 
 # ------------------ Data Sources for Kubeconfig ------------------
+# These data sources need to reference the actual cluster name, not the module output
 data "aws_eks_cluster" "cluster" {
-  name = module.eks.cluster_id
+  name = "my-eks-cluster"  # Use the actual cluster name, not module.eks.cluster_id
 }
 
 data "aws_eks_cluster_auth" "cluster" {
-  name = module.eks.cluster_id
+  name = "my-eks-cluster"  # Use the actual cluster name, not module.eks.cluster_id
 }
 
 # Configure Kubernetes provider
@@ -134,43 +143,16 @@ output "eks_node_group_ids" {
   value = [for ng in module.eks.eks_managed_node_groups : ng.node_group_id]
 }
 
-output "eks_kubeconfig" {
-  value = <<KUBECONFIG
-apiVersion: v1
-clusters:
-- cluster:
-    server: ${module.eks.cluster_endpoint}
-    certificate-authority-data: ${module.eks.cluster_certificate_authority_data}
-  name: ${module.eks.cluster_id}
-contexts:
-- context:
-    cluster: ${module.eks.cluster_id}
-    user: ${module.eks.cluster_id}
-  name: ${module.eks.cluster_id}
-current-context: ${module.eks.cluster_id}
-kind: Config
-preferences: {}
-users:
-- name: ${module.eks.cluster_id}
-  user:
-    exec:
-      apiVersion: client.authentication.k8s.io/v1beta1
-      command: aws
-      args:
-        - "eks"
-        - "get-token"
-        - "--cluster-name"
-        - "${module.eks.cluster_id}"
-        - "--region"
-        - "us-east-1"
-KUBECONFIG
-  sensitive = true
+# Fixed kubeconfig output - use a simple message instead of template
+output "eks_kubeconfig_command" {
+  description = "Command to generate kubeconfig"
+  value       = "Use 'aws eks update-kubeconfig --region us-east-1 --name my-eks-cluster' to generate kubeconfig"
 }
 
 # Additional useful outputs
 output "configure_kubectl" {
   description = "Command to configure kubectl"
-  value       = "aws eks --region us-east-1 update-kubeconfig --name ${module.eks.cluster_id}"
+  value       = "aws eks --region us-east-1 update-kubeconfig --name my-eks-cluster"
 }
 
 output "cluster_security_group_id" {
@@ -187,4 +169,15 @@ output "cluster_certificate_authority_data" {
 output "oidc_provider_arn" {
   description = "The ARN of the OIDC Provider"
   value       = module.eks.oidc_provider_arn
+}
+
+# These outputs will work after the cluster is created
+output "cluster_arn" {
+  description = "The ARN of the EKS cluster"
+  value       = module.eks.cluster_arn
+}
+
+output "cluster_status" {
+  description = "The status of the EKS cluster"
+  value       = module.eks.cluster_status
 }
