@@ -1,4 +1,4 @@
-# **Simple manual approach**
+# Simple manual approach
 
 Since you're having Terraform issues, here's the manual approach:
 bash
